@@ -4,14 +4,30 @@ This Terraform project sets up AWS Resource Explorer with indexes across enabled
 
 ## Prerequisites
 
-1. AWS Organization with:
+1. **TerraformExecutionRole**
+    If you need to create this role:
+    1. Modify the file iam/terraform-execution-role.json and add your AWS Principal (Role) that will be used to assume the terraform role.
+    2. Execute the following steps in the root folder:
+
+        ```bash
+        aws iam create-role \
+            --role-name TerraformExecutionRole \
+            --assume-role-policy-document file://iam/terraform-execution-role.json
+
+        aws iam put-role-policy \
+            --role-name TerraformExecutionRole \
+            --policy-name TerraformExecutionPolicy \
+            --policy-document file://iam/terraform-execution-role-policy.json
+        ```
+
+2. AWS Organization with:
    - Root (management) account
    - One or more member accounts
    - OrganizationAccountAccessRole available in member accounts
 
-2. AWS Identity Center (formerly SSO) configured
+3. AWS Identity Center (formerly SSO) configured
 
-3. Required Permissions:
+4. Required Permissions:
    - Ability to assume TerraformExecutionRole in root account
    - Ability to assume OrganizationAccountAccessRole in member accounts
    - Resource Explorer administrative permissions
@@ -51,22 +67,19 @@ This Terraform project sets up AWS Resource Explorer with indexes across enabled
      - CloudWatch Logs
      - IAM role management
 
-## Workflow
+## Steps
 
-1. **Root Account Setup** (via Terraform):
-   - Creates P0RoleIamResourceLister with Google federation
-   - Creates Resource Explorer indexes in enabled regions
-   - Sets up aggregator index in us-west-2
-   - Creates and sets default view
-   - Creates Lambda function and its execution role
+1. Edit the file terraform.tfvars in the root folder as follows:
+    1. Add your root account as a string value
+    2. Add your children/member accounts in an array of comma separated strings
+    3. Add the P0 Security Google Audience ID
 
-2. **Member Account Setup** (via Lambda):
-   For each member account:
-   - Assumes OrganizationAccountAccessRole
-   - Creates P0RoleIamResourceLister with Google federation
-   - Creates Resource Explorer indexes in enabled regions
-   - Sets up aggregator index in us-west-2
-   - Creates and sets default view
+2. In the root folder, run the following commands:
+    ```bash
+    terraform init
+    terraform plan
+    terraform apply
+    ```
 
 ## Project Structure
 
@@ -76,28 +89,66 @@ project_root/
 ├── variables.tf                      # Variable definitions
 ├── provider.tf                       # AWS provider configuration
 ├── terraform.tfvars                  # Your variable values
+├── iam/
+│   ├── terraform-execution-role.json       # Trust policy for TerraformExecutionRole
+│   └── terraform-execution-role-policy.json # Permission policy for TerraformExecutionRole
 ├── policies/
 │   └── resource_lister_policy.json   # Policy template
 └── lambda/
     └── setup_resource_explorer.js    # Lambda function code
 ```
 
-## Usage
+## Tasks Performed
 
-1. Configure `terraform.tfvars`:
-```hcl
-root_account_id    = "YOUR_ROOT_ACCOUNT_ID"
-member_accounts    = ["MEMBER_ACCOUNT_1_ID", "MEMBER_ACCOUNT_2_ID"]
-google_audience_id = "YOUR_GOOGLE_AUDIENCE_ID"
-```
+1. In the Root/Management Account:
+   - Created by TerraformExecutionRole:
+     - P0RoleIamResourceLister role with Google federation
+     - Resource Explorer indexes in enabled regions
+     - Aggregator index in us-west-2
+     - Default view configuration
+     - Lambda function and its roles
 
-2. Initialize and apply:
-```bash
-terraform init
-terraform apply
-```
+2. In Each Child Account:
+   - Created by Lambda (which assumes OrganizationAccountAccessRole):
+     - P0RoleIamResourceLister role with same Google federation
+     - Resource Explorer indexes in enabled regions
+     - Aggregator index in us-west-2
+     - Default view configuration
 
-3. Monitor Lambda execution:
+## Workflow
+
+1. Initial Setup:
+   ```
+   Your AWS Identity → TerraformExecutionRole
+   ```
+   - Terraform uses your provided TerraformExecutionRole to create resources in root account
+
+2. Lambda Creation:
+   - Terraform creates a zip package containing:
+     - Lambda function code (setup_resource_explorer.js)
+     - Policy template (resource_lister_policy.json)
+   - Package is uploaded to AWS Lambda
+
+3. Member Account Setup:
+   ```
+   Lambda → OrganizationAccountAccessRole → Create Resources
+   ```
+   - Lambda function iterates through member accounts
+   - For each account:
+     - Assumes the OrganizationAccountAccessRole
+     - Creates P0RoleIamResourceLister with Google federation
+     - Sets up Resource Explorer indexes and aggregator
+     - Configures default view
+
+4. Final Trust Chain:
+   ```
+   Google Federation → P0RoleIamResourceLister (in any account)
+   ```
+   - End users can assume P0RoleIamResourceLister in any account through Google federation
+
+## Monitoring and Troubleshooting
+
+Monitor Lambda execution:
 ```bash
 aws logs tail /aws/lambda/setup-resource-explorer --follow
 ```
@@ -107,23 +158,3 @@ aws logs tail /aws/lambda/setup-resource-explorer --follow
 - The Lambda function can be rerun safely as it checks for existing resources
 - Resource Explorer aggregator setup has a 24-hour cooldown period
 - The Lambda can be run with `skipAggregator: true` to test region setup without modifying aggregator settings
-
-## Permissions Flow
-
-```
-Your Identity 
-  → TerraformExecutionRole (root account)
-     → Creates initial resources
-     → Creates Lambda function
-
-Lambda Function (root account)
-  → OrganizationAccountAccessRole (member accounts)
-     → Creates P0RoleIamResourceLister
-     → Sets up Resource Explorer
-```
-
-## End Result
-- Resource Explorer indexes in all enabled regions in all accounts
-- Aggregator index in us-west-2 in all accounts
-- P0RoleIamResourceLister available in all accounts for Google federation
-- Default view configured in us-west-2 for all accounts
